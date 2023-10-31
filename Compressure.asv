@@ -1,0 +1,102 @@
+classdef Compressure < audioPlugin
+
+    properties
+        inputGain = 0;
+        threshold = -10;
+        attackTime = 0;
+        releaseTime = 50;
+        ratio = 1;
+        kneeType = 'Soft';
+        makeupGain = 0;
+        bypass = 'OFF';
+        lookaheadTime = 0;
+        fs = 48000;
+    end
+
+    properties (Constant)
+        PluginInterface = audioPluginInterface(...
+            audioPluginParameter('inputGain', 'DisplayName', 'Input Gain', 'Label', 'dB', 'Mapping',{'lin',0,36}),...
+            audioPluginParameter('threshold', 'DisplayName', 'Threshold', 'Label', 'dB', 'Mapping',{'lin',-36,0}), ...
+            audioPluginParameter('attackTime', 'DisplayName', 'Attack', 'Label', 'ms', 'Mapping',{'lin',0, 500}), ...
+            audioPluginParameter('releaseTime', 'DisplayName', 'Release', 'Label', 'ms', 'Mapping',{'lin',50, 5000}), ...
+            audioPluginParameter('lookaheadTime', 'DisplayName', 'Lookahead', 'Label', 'ms', 'Mapping',{'lin', 0, 10 }), ...
+            audioPluginParameter('ratio', 'DisplayName', 'Ratio(1:x)', 'Mapping',{'lin',1, 10}), ...
+            audioPluginParameter('kneeType', 'DisplayName', 'Knee', 'Mapping', {'enum','Soft','Hard'}), ...
+            audioPluginParameter('makeupGain', 'DisplayName', 'Makeup Gain', 'Label', 'dB','Mapping',{'lin',-12, 36}), ...
+            audioPluginParameter('bypass', 'DisplayName','Bypass','Label', 'Hz','Mapping',{'enum', 'OFF', 'ON'}));
+    end
+
+    methods
+%         function obj = Compressure(inputGain, threshold, attackTime, releaseTime, lookaheadTime, ratio, kneeType, makeupGain, bypass, fs)
+% 
+%             obj.inputGain = inputGain;
+%             obj.threshold = threshold;
+%             obj.attackTime = attackTime;
+%             obj.releaseTime = releaseTime;
+%             obj.lookaheadTime = lookaheadTime;
+%             obj.ratio = ratio;
+%             obj.kneeType = kneeType;
+%             obj.makeupGain = makeupGain;
+%             obj.bypass = bypass;
+%             obj.fs = fs;
+%         end
+
+        function output = process(obj, audio)
+            
+            numSamples = length(audio);
+            envelope = zeros(size(audio));
+            output = zeros(size(audio));
+            previousGain = 1;
+
+            if strcmpi(obj.bypass, 'ON')
+                output = audio;
+                return;
+            end
+
+            obj.attackTime = obj.attackTime / 1000; % Convert to seconds
+            obj.releaseTime = obj.releaseTime / 1000; % Convert to seconds
+            obj.threshold = 10^(obj.threshold / 20); % Convert to linear scale
+            obj.ratio = 1 / obj.ratio; % Invert for compression
+            lookaheadSamples = round(obj.lookaheadTime * 0.001 * obj.fs);
+
+            for n = 1:numSamples
+                % Calculate the envelope of the audio using RMS
+                lookaheadStart = max(1, n - lookaheadSamples);
+                envelope(n) = sqrt(mean(audio(lookaheadStart:n).^2));
+
+                % Calculate the compressor gain
+                if strcmpi(obj.kneeType, 'Hard') % Hard knee
+                    if envelope(n) >= obj.threshold
+                        gain = 1 - (1 - obj.ratio) * (obj.threshold / envelope(n));
+                    else 
+                        gain = 1;
+                    end
+
+                else, strcmpi(obj.kneeType, 'Soft') % Soft knee
+                    softKneeWidth = 5;
+                    delta = envelope(n) - obj.threshold;
+                    if delta >= softKneeWidth
+                        gain = 1 - (1 - obj.ratio) * (obj.threshold / envelope(n));
+                    else
+                        gain = 1 - (1 - obj.ratio) * (obj.threshold / envelope(n)) - (delta / softKneeWidth) * (1 - obj.ratio);
+                    end
+                end
+
+                % Apply attack and release time constants
+                if gain > previousGain
+                    gain = (1 - exp(-1 / (obj.fs * obj.attackTime))) * gain + (1 - (1 - exp(-1 / (obj.fs * obj.attackTime))) * previousGain);
+                else
+                    gain = (1 - exp(-1 / (obj.fs * obj.releaseTime))) * gain + (1 - (1 - exp(-1 / (obj.fs * obj.releaseTime))) * previousGain);
+                end
+
+                % Apply makeup gain
+                gain = gain * 10^(obj.makeupGain / 20);
+
+                % Apply gain to the audio sample
+                output(n) = obj.inputGain * audio(n) * gain;
+                previousGain = gain;
+            end
+        end
+    end
+    
+end
